@@ -42,16 +42,23 @@ parser.add_argument('--tessellation-size', type=int, default=25000,
                     help='The tessellation size (meters) if a tessellation is not provided')
 parser.add_argument('--dataset', default='new_york', help='The dataset to use')
 
-# Dataset arguments 
-parser.add_argument('--tile-id-column', default='tile_ID', help='Column name of tile\'s identifier')
-parser.add_argument('--tile-geometry', default='geometry', help='Column name of tile\'s geometry')
+# Dataset arguments
+parser.add_argument('--tile-id-column', default='tile_ID',
+                    help='Column name of tile\'s identifier')
+parser.add_argument('--tile-geometry', default='geometry',
+                    help='Column name of tile\'s geometry')
 
-parser.add_argument('--oa-id-column', default='oa_ID', help='Column name of oa\'s identifier')
-parser.add_argument('--oa-geometry', default='geometry', help='Column name of oa\'s geometry')
+parser.add_argument('--oa-id-column', default='oa_ID',
+                    help='Column name of oa\'s identifier')
+parser.add_argument('--oa-geometry', default='geometry',
+                    help='Column name of oa\'s geometry')
 
-parser.add_argument('--flow-origin-column', default='origin', help='Column name of flows\' origin')
-parser.add_argument('--flow-destination-column', default='destination', help='Column name of flows\' destination')
-parser.add_argument('--flow-flows-column', default='flow', help='Column name of flows\' actual value')
+parser.add_argument('--flow-origin-column', default='origin',
+                    help='Column name of flows\' origin')
+parser.add_argument('--flow-destination-column', default='destination',
+                    help='Column name of flows\' destination')
+parser.add_argument('--flow-flows-column', default='flow',
+                    help='Column name of flows\' actual value')
 
 args = parser.parse_args()
 
@@ -65,12 +72,12 @@ np.random.seed(args.seed)
 random.seed(args.seed)
 
 # loading DataLoader and utilities
-path = './data_loader.py'
+path = 'deepgravity/data_loader.py'
 dgd = SourceFileLoader('dg_data', path).load_module()
-path = './utils.py'
+path = 'deepgravity/utils.py'
 utils = SourceFileLoader('utils', path).load_module()
 
-# set the device 
+# set the device
 args.cuda = args.device.find("gpu") != -1
 
 if args.device.find("gpu") != -1:
@@ -80,10 +87,11 @@ else:
     torch_device = torch.device("cpu")
 
 # check if raw data exists and otherwise stop the execution
-if not os.path.isdir('./data/' + data_name):
-    raise ValueError('There is no dataset named ' + data_name + ' in ./data/')
+if not os.path.isdir('deepgravity/data/' + data_name):
+    raise ValueError('There is no dataset named ' +
+                     data_name + ' in deepgravity/data/')
 
-db_dir = './data/' + data_name
+db_dir = 'deepgravity/data/' + data_name
 
 
 def train(epoch):
@@ -164,26 +172,35 @@ def evaluate():
                 loc2cpc_numerator[id[0]] = cpc
     edf = pd.DataFrame.from_dict(loc2cpc_numerator, columns=['cpc_num'], orient='index').reset_index().rename(
         columns={'index': 'locID'})
-    oa2tile = {oa: t for t, v in tileid2oa2features2vals.items() for oa in v.keys()}
+    oa2tile = {oa: t for t, v in tileid2oa2features2vals.items()
+               for oa in v.keys()}
 
     def cpc_from_num(edf, oa2tile, o2d2flow):
         print(edf.head())
         edf['tile'] = edf['locID'].apply(lambda x: oa2tile[x])
-        edf['tot_flow'] = edf['locID'].apply(lambda x: sum(o2d2flow[x].values()) if x in o2d2flow else 1e-6)
-        cpc_df = pd.DataFrame(edf.groupby('tile').apply( \
-            lambda x: x['cpc_num'].sum() / 2 / x['tot_flow'].sum()), \
+        edf['tot_flow'] = edf['locID'].apply(lambda x: sum(
+            o2d2flow[x].values()) if x in o2d2flow else 1e-6)
+        cpc_df = pd.DataFrame(edf.groupby('tile').apply(
+            lambda x: x['cpc_num'].sum() / 2 / x['tot_flow'].sum()),
             columns=['cpc']).reset_index()
         return cpc_df
 
     cpc_df = cpc_from_num(edf, oa2tile, o2d2flow)
-    print('Average CPC of test tiles: {cpc_df.cpc.mean():.4f}  stdev: {cpc_df.cpc.std():.4f}')
 
-    fname = './results/tile2cpc_{}_{}.csv'.format(model_type, args.dataset)
+    average_cpc = cpc_df['cpc'].mean()
+    cpc_stdev = cpc_df['cpc'].std()
+
+    print(
+        f'Average CPC of test tiles: {average_cpc:.4f}  stdev: {cpc_stdev:.4f}')
+
+    fname = 'deepgravity/results/tile2cpc_{}_{}.csv'.format(
+        model_type, args.dataset)
 
     cpc_df.to_csv(fname, index=False)
 
 
-utils.tessellation_definition(db_dir, args.tessellation_area, args.tessellation_size)
+utils.tessellation_definition(
+    db_dir, args.tessellation_area, args.tessellation_size)
 
 tileid2oa2features2vals, oa_gdf, flow_df, oa2pop, oa2features, od2flow, oa2centroid = utils.load_data(db_dir,
                                                                                                       args.tile_id_column,
@@ -194,7 +211,8 @@ tileid2oa2features2vals, oa_gdf, flow_df, oa2pop, oa2features, od2flow, oa2centr
                                                                                                       args.flow_destination_column,
                                                                                                       args.flow_flows_column)
 
-oa2features = {oa: [np.log(oa2pop[oa])] + feats for oa, feats in oa2features.items()}
+oa2features = {oa: [np.log(oa2pop[oa])] + feats for oa,
+               feats in oa2features.items()}
 
 o2d2flow = {}
 for (o, d), f in od2flow.items():
@@ -229,20 +247,24 @@ test_data = [oa for t in pd.read_csv(db_dir + '/processed/test_tiles.csv', heade
              tileid2oa2features2vals[str(t)].keys()]
 
 train_dataset = dgd.FlowDataset(train_data, **train_dataset_args)
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size)
+train_loader = torch.utils.data.DataLoader(
+    train_dataset, batch_size=args.batch_size)
 
 test_dataset = dgd.FlowDataset(test_data, **test_dataset_args)
-test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.test_batch_size)
+test_loader = torch.utils.data.DataLoader(
+    test_dataset, batch_size=args.test_batch_size)
 
 dim_input = len(train_dataset.get_features(train_data[0], train_data[0]))
 
 if args.mode == 'train':
 
-    model = utils.instantiate_model(oa2centroid, oa2features, oa2pop, dim_input, device=torch_device)
+    model = utils.instantiate_model(
+        oa2centroid, oa2features, oa2pop, dim_input, device=torch_device)
     if args.device.find("gpu") != -1:
         model.cuda()
 
-    optimizer = optim.RMSprop(model.parameters(), lr=args.lr, momentum=args.momentum)
+    optimizer = optim.RMSprop(
+        model.parameters(), lr=args.lr, momentum=args.momentum)
 
     t0 = time.time()
     test()
@@ -258,7 +280,11 @@ if args.mode == 'train':
     t1 = time.time()
     print("Total training time: %s seconds" % (t1 - t0))
 
-    fname = './results/model_{}_{}.pt'.format(model_type, args.dataset)
+    if not os.path.exists('deepgravity/results'):
+        os.makedirs('deepgravity/results')
+
+    fname = 'deepgravity/results/model_{}_{}.pt'.format(
+        model_type, args.dataset)
     print('Saving model to {} ...'.format(fname))
     torch.save({'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict()
@@ -271,10 +297,13 @@ if args.mode == 'train':
 
 else:
 
-    model = utils.instantiate_model(oa2centroid, oa2features, oa2pop, dim_input, device=torch_device)
-    optimizer = optim.RMSprop(model.parameters(), lr=args.lr, momentum=args.momentum)
+    model = utils.instantiate_model(
+        oa2centroid, oa2features, oa2pop, dim_input, device=torch_device)
+    optimizer = optim.RMSprop(
+        model.parameters(), lr=args.lr, momentum=args.momentum)
 
-    checkpoint = torch.load('./results/model_' + model_type + '_' + args.dataset + '.pt')
+    checkpoint = torch.load('deepgravity/results/model_' +
+                            model_type + '_' + args.dataset + '.pt')
     model.load_state_dict(checkpoint['model_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
