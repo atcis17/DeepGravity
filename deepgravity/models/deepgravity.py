@@ -1,7 +1,5 @@
-
 import json
 import pandas as pd
-# import geopandas as gpd
 import shapely
 import area
 import numpy as np
@@ -10,6 +8,8 @@ import torch
 from zipfile import ZipFile
 from math import sqrt, sin, cos, pi, asin
 from ast import literal_eval
+import itertools
+from sklearn.model_selection import KFold
 
 from importlib.machinery import SourceFileLoader
 
@@ -25,8 +25,6 @@ def df_to_dict(df):
 
 
 def get_features_ffnn(oa_origin, oa_destination, oa2features, oa2centroid, df, distances, k):
-    # dist_od = distance(oa2centroid[oa_origin], oa2centroid[oa_destination]).km
-
     if df == 'deepgravity':
         dist_od = earth_distance(
             oa2centroid[oa_origin], oa2centroid[oa_destination])
@@ -35,7 +33,6 @@ def get_features_ffnn(oa_origin, oa_destination, oa2features, oa2centroid, df, d
     elif df == 'deepgravity_knn':
         return oa2features[oa_origin] + oa2features[oa_destination] + distances[oa_origin] + distances[oa_destination]
     else:
-        # here oa2features is oa2pop
         dist_od = earth_distance(
             oa2centroid[oa_origin], oa2centroid[oa_destination])
         return [np.log(oa2features[oa_origin])] + [np.log(oa2features[oa_destination])] + [dist_od]
@@ -43,7 +40,6 @@ def get_features_ffnn(oa_origin, oa_destination, oa2features, oa2centroid, df, d
 
 def get_flow(oa_origin, oa_destination, o2d2flow):
     try:
-        # return od2flow[(oa_origin, oa_destination)]
         return o2d2flow[oa_origin][oa_destination]
     except KeyError:
         return 0
@@ -57,7 +53,6 @@ def get_destinations(oa, size_train_dest, all_locs_in_train_region, o2d2flow, fr
     size_true_dests = min(
         int(size_train_dest * frac_true_dest), len(true_dests_all))
     size_fake_dests = size_train_dest - size_true_dests
-    # print(size_train_dest, size_true_dests, size_fake_dests, len(true_dests_all))
 
     true_dests = np.random.choice(
         true_dests_all, size=size_true_dests, replace=False)
@@ -71,7 +66,6 @@ def get_destinations(oa, size_train_dest, all_locs_in_train_region, o2d2flow, fr
 
 
 def split_train_test_sets(oas, fraction_train):
-
     n = len(oas)
     dim_train = int(n * fraction_train)
 
@@ -85,13 +79,10 @@ def split_train_test_sets(oas, fraction_train):
 class NN_MultinomialRegression(od.NN_OriginalGravity):
 
     def __init__(self, dim_input, dim_hidden, df, dropout_p=0.35,  device=torch.device("cpu")):
-
         super(od.NN_OriginalGravity, self).__init__(dim_input, device=device)
 
         self.df = df
-
         self.device = device
-
         p = dropout_p
 
         self.linear1 = torch.nn.Linear(dim_input, dim_hidden)
@@ -222,3 +213,140 @@ class NN_MultinomialRegression(od.NN_OriginalGravity):
 
     def get_features(self, oa_origin, oa_destination, oa2features, oa2centroid, df):
         return get_features_ffnn(oa_origin, oa_destination, oa2features, oa2centroid, df)
+
+
+param_grid = {
+    'lr': [0.001, 0.0001],
+    'dropout_rate': [0.3, 0.5],
+    'hidden_layers': [2, 3]
+}
+
+
+def train_and_evaluate(train_loader, test_loader, epochs, lr, dropout_rate, hidden_layers, seed, dim_input, device):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    model = NN_MultinomialRegression(
+        dim_input, dim_hidden=512, df='deepgravity', dropout_p=dropout_rate, device=device)
+    optimizer = torch.optim.RMSprop(model.parameters(), lr=lr)
+
+    for epoch in range(1, epochs + 1):
+        model.train()
+        running_loss = 0.0
+
+        for batch_idx, data_temp in enumerate(train_loader):
+            b_data = data_temp[0]
+            b_target = data_temp[1]
+            optimizer.zero_grad()
+            loss = 0.0
+            for data, target in zip(b_data, b_target):
+                output = model(data)
+                loss += model.loss(output, target)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+
+        print(f'Epoch: {epoch}, Loss: {running_loss / len(train_loader)}')
+
+    model.eval()
+    with torch.no_grad():
+        test_loss = 0.0
+        test_accuracy = 0.0
+        n_origins = 0
+
+        for batch_idx, data_temp in enumerate(test_loader):
+            b_data = data_temp[0]
+            b_target = data_temp[1]
+            for data, target in zip(b_data, b_target):
+                output = model(data)
+                test_loss += model.loss(output, target).item()
+                cpc = model.get_cpc(data, target)
+                test_accuracy += cpc
+                n_origins += 1
+
+        test_loss /= n_origins
+        test_accuracy /= n_origins
+
+    return model, optimizer, test_loss, test_accuracy
+
+
+def hyperparameter_tuning(train_data, train_dataset_args, args, dim_input, device, dgd):
+    best_params = None
+    best_cpc = float('-inf')
+
+    for params in itertools.product(param_grid['lr'], param_grid['dropout_rate'], param_grid['hidden_layers']):
+        lr, dropout_rate, hidden_layers = params
+        print(
+            f"Evaluating with params: lr={lr}, dropout_rate={dropout_rate}, hidden_layers={hidden_layers}")
+
+        kfold = KFold(n_splits=3, shuffle=True, random_state=args.seed)
+        cpc_scores = []
+
+        for train_idx, val_idx in kfold.split(train_data):
+            train_subset = torch.utils.data.Subset(
+                dgd.FlowDataset(train_data, **train_dataset_args), train_idx)
+            val_subset = torch.utils.data.Subset(
+                dgd.FlowDataset(train_data, **train_dataset_args), val_idx)
+
+            train_loader = torch.utils.data.DataLoader(
+                train_subset, batch_size=args.batch_size)
+            val_loader = torch.utils.data.DataLoader(
+                val_subset, batch_size=args.test_batch_size)
+
+            _, _, _, cpc = train_and_evaluate(
+                train_loader, val_loader, args.epochs, lr, dropout_rate, hidden_layers, args.seed, dim_input, device)
+            cpc_scores.append(cpc)
+
+        avg_cpc_score = np.mean(cpc_scores)
+        print(f"Avg CPC for params {params}: {avg_cpc_score}")
+
+        if avg_cpc_score > best_cpc:
+            best_cpc = avg_cpc_score
+            best_params = params
+
+    return best_params
+
+
+def evaluate():
+    loc2cpc_numerator = {}
+
+    model.eval()
+    with torch.no_grad():
+        for data_temp in test_loader:
+            b_data = data_temp[0]
+            b_target = data_temp[1]
+            ids = data_temp[2]
+            for id, data, target in zip(ids, b_data, b_target):
+                if args.cuda:
+                    data, target = data.cuda(), target.cuda()
+                output = model.forward(data)
+                cpc = model.get_cpc(data, target, numerator_only=True)
+                loc2cpc_numerator[id[0]] = cpc
+    edf = pd.DataFrame.from_dict(loc2cpc_numerator, columns=['cpc_num'], orient='index').reset_index().rename(
+        columns={'index': 'locID'})
+    oa2tile = {oa: t for t, v in tileid2oa2features2vals.items()
+               for oa in v.keys()}
+
+    def cpc_from_num(edf, oa2tile, o2d2flow):
+        print(edf.head())
+        edf['tile'] = edf['locID'].apply(lambda x: oa2tile[x])
+        edf['tot_flow'] = edf['locID'].apply(lambda x: sum(
+            o2d2flow[x].values()) if x in o2d2flow else 1e-6)
+        cpc_df = pd.DataFrame(edf.groupby('tile').apply(
+            lambda x: x['cpc_num'].sum() / 2 / x['tot_flow'].sum()),
+            columns=['cpc']).reset_index()
+        return cpc_df
+
+    cpc_df = cpc_from_num(edf, oa2tile, o2d2flow)
+
+    average_cpc = cpc_df['cpc'].mean()
+    cpc_stdev = cpc_df['cpc'].std()
+
+    print(
+        f'Average CPC of test tiles: {average_cpc:.4f}  stdev: {cpc_stdev:.4f}')
+
+    fname = 'deepgravity/results/tile2cpc_{}_{}.csv'.format(
+        model_type, args.dataset)
+
+    cpc_df.to_csv(fname, index=False)
